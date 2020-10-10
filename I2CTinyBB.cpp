@@ -2,6 +2,9 @@
 * I2C_BitBang for ATTiny25,45,85 family
 */
 
+//define if wanting max speed at expense of extra program space
+#define OPTIMISE_SPEED
+
 #include <Arduino.h>
 #include <I2CTinyBB.h>
 #include <avr/io.h>
@@ -13,49 +16,33 @@
 #define SDAREAD PINB & iSDABit
 
 volatile uint8_t iSDABit, iSCLBit, iSDABitI, iSCLBitI; // bit numbers of the ports
-volatile uint8_t dataByte;
-volatile uint8_t ack;
 volatile int8_t iDelay;
 volatile int8_t iDelayS;
 
-void inline sleep_us(int8_t iDelay) {
-	while (iDelay)   {
-		__asm__ __volatile__ (
-		"nop"); //just waiting 2 cycle
-		iDelay--;
-	}
+#ifdef OPTIMISE_SPEED
+static inline uint8_t i2cByteOut(uint8_t b) __attribute__((always_inline));
+#endif
+
+void inline sleep_us(int8_t iD) {
+	asm(
+	"mov r25, %0 ; \n"
+    "1: \n"
+    "dec r25 \n"
+	"nop  \n"
+    "brne 1b \n"
+    : 
+	: "r" (iD)
+	: "r25" );
 }
 
 // byte out
 static inline uint8_t i2cByteOut(uint8_t b) {
-	uint8_t i;
-	dataByte = b;
-
-//equivalent logic in c
-/*	for (i=0; i<8; i++) {
-		if (b & 0x80)
-			SDAHIGH;
-		else
-			SDALOW;
-		sleep_us(iDelayS);
-		SCLHIGH;
-		sleep_us(iDelay);
-		SCLLOW;
-		b <<= 1;
-	}
-	//get ack bit
-	SDAHIGH;
-	sleep_us(iDelay);
-	SCLHIGH;
-	sleep_us(iDelay);
-	ack = SDAREAD;
-	SCLLOW;
-	return (ack == 0) ? 1:0; // low ACK bit OK*/
+	uint8_t ack;
 
 	asm(
 	"ldi r29, 8 ; loop counter\n"
-	"lds r28, (dataByte) ; byte to transmit\n"
-	"in r26, 0x17 ; cache ddrg in register\n"
+	"mov r28, %1 ; byte to transmit\n"
+	"in r26, 0x17 ; cache ddrb in register\n"
     "1: ; loop start\n"
     "lds r27, (iSDABitI) ; get data mask\n"
     "sbrs r28, 7 ; test msb and skip if 1\n"
@@ -98,20 +85,20 @@ static inline uint8_t i2cByteOut(uint8_t b) {
     "7: \n"
     "dec r27 \n"
     "brne 7b \n"
-    "in r28, 0x16 ;read ack\n"
+    "in %0, 0x16 ;read ack\n"
     "lds r27, (iSCLBit) ;get clock mask\n"
     "or r26, r27 ; clock to output (low)\n"
     "out 0x17, r26 ; update DDRB\n"
     "lds r27, (iSDABit) ;get data mask\n"
-    "and r28, r27 ;isolate data bit\n"
+    "and %0, r27 ;isolate data bit\n"
     "brne 8f ; if set this is nack   \n"
-	"ldi r28, 1 ; data 0 ack OK\n"
+	"ldi %0, 1 ; data 0 ack OK\n"
     "8:         \n"
-    "sts (ack), r28    \n"
-    : : : "r26", "r27", "r28", "r29" ); //just waiting 2 cycle
+    : "=r" (ack)
+	: "r" (b)
+	: "r26", "r27", "r28", "r29" );
 	return ack;
 }
-
 
 // Byte In
 static inline uint8_t i2cByteIn(uint8_t bLast) {
@@ -143,7 +130,7 @@ static inline uint8_t i2cByteIn(uint8_t bLast) {
 static inline uint8_t i2cStart(uint8_t addr, uint8_t bRead) {
 	uint8_t rc;
 	SDALOW;
-	sleep_us(iDelay);
+	sleep_us(iDelayS);
 	SCLLOW;
 	addr <<= 1;
 	if (bRead)
@@ -167,12 +154,11 @@ static inline uint8_t i2cWrite(uint8_t *data, uint8_t iLen) {
 	uint8_t rc, count = iLen;
 
 	rc = 1;
-	while (count && rc == 1) {
+	while (count) {
 		b = *data++;
 		rc = i2cByteOut(b);
-		if (rc == 1) { // success
-			count--;
-		}
+		if (rc == 0) break;
+		count--;
 	}
 	return (rc == 1) ? (iLen - count) : 0; // 0 = error
 }

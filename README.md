@@ -7,6 +7,7 @@
 - speed can be set using a delay factor, see .h file for details
 - simplified api hides details of start stop etc.
 - just set up a buffer containing all bytes needed to be sent.
+- A #define at top of cpp file allows optimising for speed or size
 
 ### Functions
 // Init
