@@ -2,7 +2,9 @@
 * I2C_BitBang for ATTiny25,45,85 family
 */
 
-//define if wanting max speed at expense of extra program space
+//define to use asm versions of byteout and bytein 
+#define USE_ASM
+//define if wanting max speed at expense of  a little extra program space
 #define OPTIMISE_SPEED
 
 #include <Arduino.h>
@@ -18,6 +20,7 @@
 volatile uint8_t iSDABit, iSCLBit, iSDABitI, iSCLBitI; // bit numbers of the ports
 volatile int8_t iDelay;
 volatile int8_t iDelayS;
+volatile uint8_t bL;
 
 #ifdef OPTIMISE_SPEED
 static inline uint8_t i2cByteOut(uint8_t b) __attribute__((always_inline));
@@ -39,6 +42,7 @@ void inline sleep_us(int8_t iD) {
 static inline uint8_t i2cByteOut(uint8_t b) {
 	uint8_t ack;
 
+#ifdef USE_ASM
 	asm(
 	"ldi r29, 8 ; loop counter\n"
 	"mov r28, %1 ; byte to transmit\n"
@@ -98,13 +102,98 @@ static inline uint8_t i2cByteOut(uint8_t b) {
 	: "r" (b)
 	: "r26", "r27", "r28", "r29" );
 	return ack;
+#else
+	uint8_t i;
+	for (i=0; i<8; i++) {
+		if (b & 0x80)
+			SDAHIGH;
+		else
+			SDALOW;
+		sleep_us(iDelayS);
+		SCLHIGH;
+		sleep_us(iDelay);
+		SCLLOW;
+		b <<= 1;
+	}
+	//get ack bit
+	SDAHIGH;
+	sleep_us(iDelay);
+	SCLHIGH;
+	sleep_us(iDelay);
+	ack = SDAREAD;
+	SCLLOW;
+	return (ack == 0) ? 1:0; // low ACK bit OK*/
+#endif
 }
 
 // Byte In
 static inline uint8_t i2cByteIn(uint8_t bLast) {
 	uint8_t i;
 	uint8_t b = 0;
+#ifdef USE_ASM
+	bL = bLast;
+	asm(
+	"in r26, 0x17 ; cache ddrb in register\n"
+    "lds r27, (iSDABitI) ; get data mask\n"
+    "and r26, r27 ; data to input (high)\n"
+    "out 0x17, r26 ; update DDRB\n"
+	"ldi r29, 8 ; loop counter\n"
+    "1: ; loop start\n"
+    "lds r27, (iDelay) ;sleep for a bit\n"
+    "2: \n"
+    "dec r27 \n"
+    "brne 2b \n"
+    "lds r27, (iSCLBitI) ;get clock mask\n"
+    "and r26, r27 ; clock to input (high)\n"
+    "out 0x17, r26 ; update DDRB\n"
+    "lds r27, (iDelayS) ;sleep for a bit\n"
+    "3: \n"
+    "dec r27 \n"
+    "brne 3b \n"
+    "add r23, r23 ;shift data byte \n"
+    "in r28, 0x16 ;read ack\n"
+    "lds r27, (iSDABit) ;get data mask\n"
+    "and r28, r27 ;isolate data bit\n"
+    "breq 4f \n"
+    "inc r23  ; put in data bit  \n"
+    "4: \n"
+    "lds r27, (iSCLBit) ;get clock mask\n"
+    "or r26, r27 ; clock to output (low)\n"
+    "out 0x17, r26 ; update DDRB\n"
+    "dec r29  ;decrement loop count\n"
+    "brne 1b ; loop end\n"
+    "mov %0, r23 ; save data\n"
+    "lds r27, (iSDABit) ; get data mask\n"
+    "lds r23, (bL) ; get data mask\n"
+    "sbrs r23, 0 ; nacK data high on bLast\n"
+    "or r26, r27 ; data to output (low)\n"
+    "out 0x17, r26 ; update DDRB\n"
+    "lds r27, (iDelay) ;sleep for a bit\n"
+    "6: \n"
+    "dec r27 \n"
+    "brne 6b \n"
+    "lds r27, (iSCLBitI) ;get clock mask\n"
+    "and r26, r27 ; clock to input (high)\n"
+    "out 0x17, r26 ; update DDRB\n"
+    "lds r27, (iDelay) ;sleep for a bit\n"
+    "7: \n"
+    "dec r27 \n"
+    "brne 7b \n"
+    "lds r27, (iSCLBit) ;get clock mask\n"
+    "or r26, r27 ; clock to output (low)\n"
+    "out 0x17, r26 ; update DDRB\n"
+    "lds r27, (iDelay) ;sleep for a bit\n"
+    "8: \n"
+    "dec r27 \n"
+    "brne 8b \n"
+    "lds r27, (iSDABit) ; get data mask\n"
+    "or r26, r27 ; data to output (low)\n"
+    "out 0x17, r26 ; update DDRB\n"
+    : "=r" (b)
+	: 
+	: "r23", "r26", "r27", "r28", "r29" );
 
+#else
 	SDAHIGH;
 	for (i=0; i<8; i++) {
 		sleep_us(iDelay);
@@ -123,6 +212,7 @@ static inline uint8_t i2cByteIn(uint8_t bLast) {
 	SCLLOW;
 	sleep_us(iDelay);
 	SDALOW;
+#endif
 	return b;
 }
 
